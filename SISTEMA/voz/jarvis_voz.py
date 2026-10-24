@@ -2,7 +2,7 @@
 Jarvis por voz — mantén pulsada la tecla º y habla, o di "Hey Pato" y habla.
   1) Mantienes pulsada la tecla º (o dices "Hey Pato") y hablas
   2) Al soltarla, tu voz se convierte en texto        (Vosk, local en tu PC)
-  3) El texto se envía a Gemini CLI en esta bóveda      (gemini -p)
+  3) El texto se envía a Antigravity CLI (agy) en esta bóveda      (agy -p)
   4) Jarvis te responde en voz alta                    (voz neuronal de Microsoft)
 """
 import asyncio
@@ -88,15 +88,15 @@ PIPER_VOZ = "es/es_ES/davefx/medium"
 PIPER_VELOCIDAD = 1.0          # 1.0 normal; 0.8 más rápido; 1.2 más lento
 PIPER_DIR = Path(__file__).with_name("voces_piper")
 
-TIMEOUT_GEMINI = 300           # segundos máximos por orden
+TIMEOUT_AGY = 300           # segundos máximos por orden
 
 # Ahorro de consumo: cada orden va al modelo más barato que la puede resolver bien.
 # flash-lite = charla y órdenes simples; flash = uso normal; pro = informes, análisis y programar.
 # Di "modo potente" o "piénsalo bien" en la orden para forzar pro.
-ENRUTAR_MODELO = True          # False = todo con el modelo por defecto (como antes)
-MODELO_SIMPLE = "flash-lite"
-MODELO_NORMAL = "flash"
-MODELO_POTENTE = "pro"
+ENRUTAR_MODELO = False         # False = modelo por defecto de agy. Si lo activas, pon en MODELO_* los nombres exactos de "agy models"
+MODELO_SIMPLE = ""
+MODELO_NORMAL = ""
+MODELO_POTENTE = ""
 PALABRAS_POTENTE = ["informe", "analiza", "analisis", "investiga", "investigacion", "script", "programa",
                     "codigo", "optimiza", "compara", "estrategia", "planifica", "plan de", "modo potente",
                     "piensalo bien", "a fondo", "detallado", "configura", "arregla", "error"]
@@ -109,8 +109,8 @@ MAX_ORDENES_SESION = 8
 CONTEXTO_CHAT_MENSAJES = 6     # mensajes recientes del chat que se pasan al empezar conversación nueva
 CONSUMO_DB = Path(__file__).with_name("consumo.db")   # registro de cada orden: modelo, tokens, coste
 
-# Gemini CLI se ejecuta con --approval-mode yolo (sin pedir permiso por cada herramienta).
-# Correo, calendario, Drive y Spotify solo funcionan si añades sus servidores con "gemini mcp add" (ver README).
+# agy se ejecuta con --dangerously-skip-permissions (sin pedir permiso por cada herramienta).
+# Correo, calendario, Drive y Spotify solo funcionan si añades sus servidores con "agy mcp add" (ver README).
 # -------------------------------------------------------------------
 
 SR = 16000
@@ -445,14 +445,15 @@ def transcribir(modelo: VoskModel, audio: np.ndarray, whisper=None) -> str:
 
 
 # ----------------------------- GEMINI -----------------------------
-def encontrar_gemini() -> str:
-    ruta = shutil.which("gemini")
+def encontrar_agy() -> str:
+    ruta = shutil.which("agy")
     if ruta:
         return ruta
-    candidato = Path(os.environ.get("APPDATA", "")) / "npm" / "gemini.cmd"
-    if candidato.exists():
-        return str(candidato)
-    sys.exit("No encuentro 'gemini'. Instálalo con: npm install -g @google/gemini-cli")
+    for c in (Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Antigravity CLI" / "agy.exe",
+              Path.home() / ".local" / "bin" / "agy.exe", Path.home() / ".local" / "bin" / "agy"):
+        if c.exists():
+            return str(c)
+    sys.exit("No encuentro 'agy'. Instálalo con: irm https://antigravity.google/cli/install.ps1 | iex")
 
 
 def elegir_modelo(orden: str):
@@ -511,7 +512,7 @@ def registrar_consumo(orden: str, modelo, nueva: bool, resultado, segundos: floa
         log(f"(no pude registrar el consumo: {e})")
 
 
-def preguntar_a_gemini(gemini: str, orden: str) -> str:
+def preguntar_a_agy(agy: str, orden: str) -> str:
     inicio = time.time()
     modelo = elegir_modelo(orden)
     reciente, n_ordenes = _sesion()
@@ -530,9 +531,8 @@ def preguntar_a_gemini(gemini: str, orden: str) -> str:
         "Responde en 1-3 frases cortas y naturales, aptas para leerse en voz alta, "
         "sin markdown, sin listas y sin rutas largas."
     )
-    cmd = [gemini, "-p", prompt] + (["--resume", "latest"] if reciente else []) + (["-m", modelo] if modelo else []) + [
-        "-o", "stream-json",                                # así sé qué herramienta está usando
-        "--approval-mode", "yolo"]
+    cmd = [agy, "-p", prompt] + (["--continue"] if reciente else []) + (["--model", modelo] if modelo else []) + [
+        "--dangerously-skip-permissions", "--print-timeout", f"{TIMEOUT_AGY}s"]
     log(f"(modelo: {modelo or 'defecto'}; " + (f"continúa, orden {n_ordenes + 1})" if reciente else "conversación nueva)"))
 
     def _fin(texto: str, ok: bool) -> str:
@@ -551,44 +551,21 @@ def preguntar_a_gemini(gemini: str, orden: str) -> str:
         caducado["v"] = True
         proc.kill()
 
-    temporizador = threading.Timer(TIMEOUT_GEMINI, _matar)
+    temporizador = threading.Timer(TIMEOUT_AGY, _matar)
     temporizador.start()
-    resultado, textos, crudo = None, [], []
+    resultado = None
+    mascota("pensando", "Pensando…")
     try:
-        for linea in proc.stdout:
-            linea = linea.strip()
-            if not linea:
-                continue
-            try:
-                ev = json.loads(linea)
-            except ValueError:
-                crudo.append(linea)
-                continue
-            tipo = ev.get("type")
-            if tipo == "init":
-                sesion["id"] = ev.get("session_id")
-            elif tipo == "tool_use":
-                mascota("trabajando", etiqueta_herramienta(ev.get("tool_name", "")))
-            elif tipo == "tool_result":
-                mascota("pensando", "Pensando…")             # terminó una herramienta
-            elif tipo == "message" and ev.get("role") == "assistant" and ev.get("content"):
-                if ev.get("delta") and textos:
-                    textos[-1] += ev["content"]                # trozos de un mismo mensaje
-                else:
-                    textos.append(ev["content"])
-            elif tipo == "result":
-                resultado = ev
+        salida = proc.stdout.read()
     finally:
         temporizador.cancel()
     proc.wait()
     if caducado["v"]:
         return _fin("La orden ha tardado demasiado y la he cancelado.", False)
-    if resultado is not None and resultado.get("status") != "error" and proc.returncode == 0:
-        return _fin(("".join(textos) if textos else "").strip() or "Hecho.", True)
-    if resultado is None and textos and proc.returncode == 0:
-        return _fin(textos[-1].strip(), True)
-    detalle = ((resultado or {}).get("error") or {}).get("message") or " ".join(crudo)[:500]
-    log(f"gemini devolvió error (código {proc.returncode}): {str(detalle)[:500]}")
+    texto = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", salida).strip()
+    if proc.returncode == 0 and texto:
+        return _fin(texto, True)
+    log(f"agy devolvió error (código {proc.returncode}): {texto[:500]}")
     return _fin("Ha habido un error al ejecutar la orden. Mira el registro para ver el detalle.", False)
 
 
@@ -701,7 +678,7 @@ def main() -> None:
     mascota("pensando", "Despertando…")
     lanzar_mascota()
     pitido(500, 100)                      # 1er pitido: arrancando (cargar el modelo tarda ~30 s)
-    gemini = encontrar_gemini()
+    agy = encontrar_agy()
     log(f"Bóveda: {VAULT} (proceso {os.getpid()})")
     modelo = preparar_vosk()
     whisper = preparar_whisper()
@@ -754,7 +731,7 @@ def main() -> None:
         if respuesta is None:
             mascota("pensando", "Pensando…")
             try:
-                respuesta = preguntar_a_gemini(gemini, orden)
+                respuesta = preguntar_a_agy(agy, orden)
             except subprocess.TimeoutExpired:
                 respuesta = "La orden ha tardado demasiado y la he cancelado."
         log(f"Respuesta: {respuesta}")

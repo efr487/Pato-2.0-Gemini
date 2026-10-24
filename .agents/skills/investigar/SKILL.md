@@ -1,5 +1,7 @@
-description = "Investiga un tema y guarda un informe en MAQUINA/investigacion"
-prompt = """
-Investiga este tema: {{args}}
+---
+name: investigar
+description: Investiga un tema y guarda un informe en MAQUINA/investigacion
+---
+
+Investiga este tema: $ARGUMENTS
 Guarda un informe en `MAQUINA/investigacion/` con: resumen, puntos clave, fuentes y próximos pasos. Enlaza con notas relacionadas de la bóveda. Resume el resultado en 5 líneas.
-"""
