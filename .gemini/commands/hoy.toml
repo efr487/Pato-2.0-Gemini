@@ -1,7 +1,7 @@
----
-description: Resumen del día con tareas pendientes y prioridades
----
+description = "Resumen del día con tareas pendientes y prioridades"
+prompt = """
 Lee `MAQUINA/memoria/`, el diario más reciente en `MAQUINA/diario/` y las notas de `MAQUINA/tareas/`.
 Después dame: (1) las 3 prioridades de hoy, (2) tareas pendientes o atrasadas, (3) una sugerencia para empezar.
 Si no existe el diario de hoy, créalo con la plantilla `SISTEMA/plantillas/diario.md`.
 Sé breve.
+"""
